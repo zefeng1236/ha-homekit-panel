@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HomeKit-style Control Panel",
+        "description": "Click Submit to add the 'Smart Home' panel to your sidebar. No parameters needed; the panel reads states and controls devices through the official Home Assistant interface."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Already configured. Only one instance is allowed."
+    }
+  }
+}

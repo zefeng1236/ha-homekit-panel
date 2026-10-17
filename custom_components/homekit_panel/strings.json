@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HomeKit 风格控制面板",
+        "description": "点击「提交」即可在侧边栏添加「智能家居」面板。无需任何参数，面板通过 Home Assistant 官方接口读取状态和控制设备。"
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "已配置，每个实例仅允许添加一次。"
+    }
+  }
+}
