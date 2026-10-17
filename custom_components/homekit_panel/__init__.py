@@ -61,14 +61,20 @@ class HomeKitPanelJsView(HomeAssistantView):
         )
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """注册面板与 JS 视图(组件每次启动时都会执行)。"""
-    hass.http.register_view(HomeKitPanelJsView())
+async def _async_register_panel(hass: HomeAssistant) -> None:
+    """注册 panel.js 的 HTTP 视图与侧边栏面板(幂等, 可重复调用)。
 
-    # 幂等: 已注册则先移除再注册, 保证加载最新代码
+    先移除再注册: 保证每次启动都加载最新的 panel.js,
+    且 async_setup / async_setup_entry 重复调用时不会冲突。
+    """
+    if not hass.data.get(DOMAIN, {}).get("js_view_registered"):
+        hass.http.register_view(HomeKitPanelJsView())
+        hass.data.setdefault(DOMAIN, {})["js_view_registered"] = True
+
     async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
 
-    async_register_panel(
+    # 注意: async_register_panel 是协程, 必须 await, 否则面板不会注册
+    await async_register_panel(
         hass,
         frontend_url_path=PANEL_URL_PATH,
         webcomponent_name=PANEL_COMPONENT_NAME,
@@ -78,11 +84,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         require_admin=False,
     )
     _LOGGER.debug("已注册 %s 面板: /%s", PANEL_TITLE, PANEL_URL_PATH)
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """组件级设置: 注册面板与 JS 视图。"""
+    await _async_register_panel(hass)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """配置入口设置完成。"""
+    """配置入口设置: 确保面板已注册(某些启动路径不会调用 async_setup)。"""
+    await _async_register_panel(hass)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
