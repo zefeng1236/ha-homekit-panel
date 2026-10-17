@@ -1709,6 +1709,7 @@
     EDITING = !!on;
     if (!PANEL_REFS) return;
     PANEL_REFS.root.classList.toggle('editing', EDITING);
+    PANEL_REFS.editBtn.classList.toggle('active', EDITING);
     PANEL_REFS.editBar.classList.toggle('show', EDITING);
     rerenderPanel();
     toast(EDITING ? '编辑模式:点击卡片可修改设备' : '已退出编辑模式');
@@ -1790,6 +1791,7 @@
           rerenderPanel();
         }, ['weather', 'sensor']);
       });
+      const actions = h('div', 'topbar-actions');
       const themeBtn = h('button', 'icon-btn');
       themeBtn.type = 'button';
       themeBtn.title = '切换深浅色';
@@ -1797,10 +1799,11 @@
       editBtn.type = 'button';
       editBtn.title = '编辑面板布局';
       editBtn.addEventListener('click', () => setEditing(!EDITING));
+      actions.appendChild(themeBtn);
+      actions.appendChild(editBtn);
 
       right.appendChild(weather);
-      right.appendChild(themeBtn);
-      right.appendChild(editBtn);
+      right.appendChild(actions);
       topbar.appendChild(menuBtn);
       topbar.appendChild(left);
       topbar.appendChild(right);
@@ -1814,6 +1817,7 @@
         wtemp: weather.querySelector('[data-ref=wtemp]'),
         whum: weather.querySelector('[data-ref=whum]'),
         themeBtn,
+        editBtn,
       };
 
       const applyTheme = () => {
@@ -1882,7 +1886,7 @@
       root.appendChild(toastEl);
 
       /* ---- 全局引用(供编辑系统重渲染) ---- */
-      PANEL_REFS = { root: root, scenes: scenes, rooms: rooms, editBar: editBar, weatherRefs: this._refs };
+      PANEL_REFS = { root: root, scenes: scenes, rooms: rooms, editBar: editBar, weatherRefs: this._refs, editBtn: editBtn };
 
       /* ---- 时钟 ---- */
       tickClock(this._refs);
@@ -2029,10 +2033,36 @@
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: transform .15s;
+  transition: transform .15s, background-color .15s, color .15s;
   color: var(--text);
 }
 .icon-btn:active { transform: scale(.92); }
+.icon-btn:hover { filter: brightness(1.04); }
+.icon-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* 顶栏右侧按钮分组(与天气 chip 视觉呼应) */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--card);
+  border-radius: 999px;
+  padding: 3px;
+  box-shadow: var(--shadow);
+}
+.topbar-actions .icon-btn {
+  box-shadow: none;
+  background: none;
+  width: 34px; height: 34px;
+  color: var(--text-2);
+}
+.topbar-actions .icon-btn:hover { background: var(--chip); color: var(--text); }
+.topbar-actions .icon-btn.active { background: var(--accent); color: #fff; }
+.topbar-actions .icon-btn.active:hover { background: var(--accent); }
 
 /* ---------- 场景快捷区 ---------- */
 .scenes {
