@@ -11,5 +11,9 @@ PANEL_COMPONENT_NAME = "homekit-panel"
 # panel.js 的服务地址(由本集成通过 HTTP 视图提供, 与 /local/ 一样无需认证)
 PANEL_MODULE_URL = "/api/homekit_panel/panel.js"
 
+# 面板配置(房间/场景/天气)的存储文件名(.storage/ 下, 可视化编辑保存用)
+PANEL_CONFIG_STORAGE_KEY = "homekit_panel_config"
+PANEL_CONFIG_URL = "/api/homekit_panel/config"
+
 # 配置入口标题
 CONFIG_ENTRY_TITLE = "HomeKit 风格控制面板"

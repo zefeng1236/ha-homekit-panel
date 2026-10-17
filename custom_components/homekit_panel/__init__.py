@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from aiohttp import web
 from homeassistant.components.frontend import async_remove_panel
@@ -17,11 +18,14 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.components.panel_custom import async_register_panel
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CONFIG_ENTRY_TITLE,
     DOMAIN,
     PANEL_COMPONENT_NAME,
+    PANEL_CONFIG_STORAGE_KEY,
+    PANEL_CONFIG_URL,
     PANEL_ICON,
     PANEL_MODULE_URL,
     PANEL_TITLE,
@@ -61,6 +65,91 @@ class HomeKitPanelJsView(HomeAssistantView):
         )
 
 
+def _validate_config(data: Any) -> str | None:
+    """宽松校验面板配置结构, 返回错误信息或 None。"""
+    if not isinstance(data, dict):
+        return "配置必须是 JSON 对象"
+    if data.get("version") != 1:
+        return "version 必须为 1"
+    rooms = data.get("rooms")
+    if not isinstance(rooms, list):
+        return "rooms 必须是数组"
+    for room in rooms:
+        if not isinstance(room, dict) or not isinstance(room.get("name"), str):
+            return "房间缺少 name 字段"
+        if not isinstance(room.get("devices", []), list):
+            return "房间 devices 必须是数组"
+        for dev in room["devices"]:
+            if not isinstance(dev, dict) or not isinstance(dev.get("entity_id"), str):
+                return "设备缺少 entity_id 字段"
+    scenes = data.get("scenes", [])
+    if not isinstance(scenes, list):
+        return "scenes 必须是数组"
+    for scene in scenes:
+        if not isinstance(scene, dict) or not isinstance(scene.get("label"), str):
+            return "场景缺少 label 字段"
+        actions = scene.get("actions", [])
+        if not isinstance(actions, list):
+            return "场景 actions 必须是数组"
+        for act in actions:
+            if not isinstance(act, dict) or not all(
+                isinstance(act.get(k), str) for k in ("domain", "service", "entity_id")
+            ):
+                return "场景动作缺少 domain/service/entity_id"
+    weather = data.get("weather")
+    if weather is not None and not isinstance(weather, str):
+        return "weather 必须是字符串或 null"
+    return None
+
+
+class PanelConfigView(HomeAssistantView):
+    """面板配置的可视化编辑存储: 读取 / 保存 / 重置。
+
+    requires_auth = False: 与 panel.js 视图一致。配置内容仅包含
+    实体 ID 与布局, 不含令牌; 且只能由本面板前端读写。
+    """
+
+    url = PANEL_CONFIG_URL
+    name = "api:homekit_panel:config"
+    requires_auth = False
+
+    def __init__(self) -> None:
+        self._store: Store | None = None
+
+    def _get_store(self, hass: HomeAssistant) -> Store:
+        if self._store is None:
+            self._store = Store(hass, 1, PANEL_CONFIG_STORAGE_KEY)
+        return self._store
+
+    async def get(self, request: web.Request) -> web.Response:
+        """返回已保存的配置; 从未保存过则返回 null。"""
+        hass = request.app["hass"]
+        data = await self._get_store(hass).async_load()
+        return web.json_response({"ok": True, "config": data})
+
+    async def post(self, request: web.Request) -> web.Response:
+        """保存面板前端提交的配置。"""
+        hass = request.app["hass"]
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001 - 任何解析失败都按 400 处理
+            return web.json_response({"ok": False, "error": "请求体不是合法 JSON"}, status=400)
+
+        error = _validate_config(data)
+        if error:
+            return web.json_response({"ok": False, "error": error}, status=400)
+
+        await self._get_store(hass).async_save(data)
+        _LOGGER.debug("面板配置已保存: %d 个房间", len(data.get("rooms", [])))
+        return web.json_response({"ok": True})
+
+    async def delete(self, request: web.Request) -> web.Response:
+        """清除已保存配置, 恢复内置默认。"""
+        hass = request.app["hass"]
+        await self._get_store(hass).async_remove()
+        return web.json_response({"ok": True})
+
+
 async def _async_register_panel(hass: HomeAssistant) -> None:
     """注册 panel.js 的 HTTP 视图与侧边栏面板(幂等, 可重复调用)。
 
@@ -69,6 +158,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
     """
     if not hass.data.get(DOMAIN, {}).get("js_view_registered"):
         hass.http.register_view(HomeKitPanelJsView())
+        hass.http.register_view(PanelConfigView())
         hass.data.setdefault(DOMAIN, {})["js_view_registered"] = True
 
     async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)

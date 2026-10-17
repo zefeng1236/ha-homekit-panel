@@ -36,34 +36,35 @@
     });
   }
 
-  /* ================= 场景配置 ================= */
+  /* ================= 默认配置(可视化编辑保存前使用) ================= */
 
   const VACUUM_ID = 'vacuum.roborock_t6';
 
-  const SCENES = [
+  /* 场景动作: [{domain, service, entity_id}] —— 完全可序列化,
+     保存到 HA 存储后, 在任何设备上都能还原执行逻辑 */
+  const DEFAULT_SCENES = [
     {
-      label: '全部关灯', icon: 'power', color: 'sc-orange',
-      run: async () => {
-        const lamps = [
-          'light.yeelink_lamp1',
-          'light.lemesh_wy0c15',
-        ];
-        await Promise.allSettled(lamps.map((id) => callService('light', 'turn_off', { entity_id: id })));
-      },
+      id: 'sc-lights-off', label: '全部关灯', icon: 'power', color: 'sc-orange',
+      actions: [
+        { domain: 'light', service: 'turn_off', entity_id: 'light.yeelink_lamp1' },
+        { domain: 'light', service: 'turn_off', entity_id: 'light.lemesh_wy0c15' },
+      ],
     },
     {
-      label: '开始清扫', icon: 'play', color: 'sc-green',
-      run: () => callService('vacuum', 'start', { entity_id: VACUUM_ID }),
+      id: 'sc-vac-start', label: '开始清扫', icon: 'play', color: 'sc-green',
+      actions: [
+        { domain: 'vacuum', service: 'start', entity_id: VACUUM_ID },
+      ],
     },
     {
-      label: '机器人回充', icon: 'home', color: 'sc-blue',
-      run: () => callService('vacuum', 'return_to_base', { entity_id: VACUUM_ID }),
+      id: 'sc-vac-dock', label: '机器人回充', icon: 'home', color: 'sc-blue',
+      actions: [
+        { domain: 'vacuum', service: 'return_to_base', entity_id: VACUUM_ID },
+      ],
     },
   ];
 
-  /* ================= 房间与设备配置 ================= */
-
-  const ROOMS = [
+  const DEFAULT_ROOMS = [
     {
       id: 'living', name: '客厅', icon: 'sofa',
       devices: [
@@ -132,7 +133,19 @@
     },
   ];
 
-  const WEATHER_ENTITY = 'weather.home';
+  const DEFAULT_WEATHER_ENTITY = 'weather.home';
+
+  const DEFAULT_CONFIG = {
+    version: 1,
+    weather: DEFAULT_WEATHER_ENTITY,
+    scenes: DEFAULT_SCENES,
+    rooms: DEFAULT_ROOMS,
+  };
+
+  /* 运行时可替换(默认配置 → 加载已保存配置) */
+  let SCENES = DEFAULT_SCENES;
+  let ROOMS = DEFAULT_ROOMS;
+  let WEATHER_ENTITY = DEFAULT_WEATHER_ENTITY;
 
   /* ================= 全局状态 ================= */
 
@@ -169,6 +182,7 @@
     book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
     leaf: '<path d="M5 19c0-9 6-14 15-15 1 9-4 15-13 15z"/><path d="M5 19c3-5 7-8.5 11-9.5"/>',
     menu: '<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',
     mute: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
     volume: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>',
     activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
@@ -803,24 +817,50 @@
 
   /* ================= 渲染: 场景 / 房间 / 天气 ================= */
 
+  function runSceneActions(actions) {
+    const list = Array.isArray(actions) ? actions : [];
+    if (!list.length) return Promise.resolve();
+    return Promise.allSettled(list.map((a) =>
+      callService(a.domain, a.service, { entity_id: a.entity_id })));
+  }
+
   function renderScenes(container) {
     container.innerHTML = '';
+    const editing = isEditing();
     SCENES.forEach((s) => {
       const b = h('button', 'scene-tile ' + s.color);
       b.type = 'button';
       b.innerHTML = icon(s.icon, 24) + '<span>' + s.label + '</span>';
       b.addEventListener('click', async () => {
+        if (editing) { openSceneEditor(s); return; }
         b.style.transform = 'scale(.94)';
         setTimeout(() => { b.style.transform = ''; }, 140);
         try {
-          await s.run();
+          await runSceneActions(s.actions);
           toast(s.label + ' · 已执行');
         } catch (err) {
           toast(s.label + ' 失败:' + (err && err.message ? err.message : '未知错误'));
         }
       });
+      if (editing) {
+        const del = h('button', 'mini-del', '✕');
+        del.type = 'button';
+        del.title = '删除场景';
+        del.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          SCENES = SCENES.filter((x) => x !== s);
+          renderScenes(container);
+        });
+        b.appendChild(del);
+      }
       container.appendChild(b);
     });
+    if (editing) {
+      const add = h('button', 'scene-tile scene-add', icon('power', 24) + '<span>添加场景</span>');
+      add.type = 'button';
+      add.addEventListener('click', () => openSceneEditor(null));
+      container.appendChild(add);
+    }
   }
 
   function renderRooms(container) {
@@ -830,6 +870,28 @@
       const title = h('div', 'room-title');
       title.innerHTML = icon(room.icon, 18) + '<span>' + room.name + '</span><span class="room-count" data-ref="count"></span>';
       sec.appendChild(title);
+
+      if (isEditing()) {
+        const tools = h('div', 'room-tools');
+        const mk = (txt, tip, fn) => {
+          const b = h('button', 'mini-btn', txt);
+          b.type = 'button';
+          b.title = tip;
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+          tools.appendChild(b);
+        };
+        mk('✎', '重命名/换图标', () => openRoomEditor(room));
+        mk('↑', '上移房间', () => moveRoom(room, -1, container));
+        mk('↓', '下移房间', () => moveRoom(room, 1, container));
+        mk('✕', '删除房间', () => {
+          if (confirm('删除房间「' + room.name + '」及其全部设备?')) {
+            ROOMS = ROOMS.filter((r) => r !== room);
+            renderRooms(container);
+          }
+        });
+        title.appendChild(tools);
+      }
+
       const grid = h('div', 'grid');
       room.devices.forEach((dev) => {
         const builder = BUILDERS[dev.type];
@@ -837,12 +899,35 @@
           grid.appendChild(h('div', 'card', '<div class="card-name">未知类型:' + dev.type + '</div>'));
           return;
         }
-        grid.appendChild(builder(dev));
+        const cardEl = builder(dev);
+        grid.appendChild(cardEl);
+        if (isEditing()) attachCardEdit(cardEl, room, dev, container);
       });
+      if (isEditing()) {
+        const add = h('button', 'card card-add', '<div class="add-plus">＋</div><div class="card-name">添加设备</div>');
+        add.type = 'button';
+        add.addEventListener('click', () => openDeviceEditor(null, room, container));
+        grid.appendChild(add);
+      }
       sec.appendChild(grid);
       container.appendChild(sec);
       room._countEl = title.querySelector('[data-ref=count]');
     });
+
+    if (isEditing()) {
+      const addRoom = h('button', 'room-add', '＋ 添加房间');
+      addRoom.type = 'button';
+      addRoom.addEventListener('click', () => openRoomEditor(null));
+      container.appendChild(addRoom);
+    }
+  }
+
+  function moveRoom(room, dir, container) {
+    const i = ROOMS.indexOf(room);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= ROOMS.length) return;
+    ROOMS.splice(j, 0, ROOMS.splice(i, 1)[0]);
+    renderRooms(container);
   }
 
   function updateAll() {
@@ -924,6 +1009,711 @@
     try { localStorage.setItem('hk-panel-theme', m); } catch (e) { /* ignore */ }
   }
 
+  /* ================= 可视化编辑 ================= */
+
+  const CONFIG_URL = '/api/homekit_panel/config';
+
+  let EDITING = false;
+  let PANEL_REFS = null; // { root, scenes, rooms, editBar }
+
+  function isEditing() { return EDITING; }
+
+  function genId(prefix) {
+    return prefix + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function escHtml(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function cloneDev(d) { return JSON.parse(JSON.stringify(d)); }
+
+  /* ---------- 设备类型元数据(供编辑器与类型推断使用) ---------- */
+
+  const DEVICE_TYPES = {
+    'switch': { label: '开关', icon: 'plug', color: 'gray', fields: [] },
+    'switch-power': { label: '计量插座', icon: 'plug', color: 'teal', fields: ['power', 'energy'] },
+    'light': { label: '灯', icon: 'lamp', color: 'amber', fields: [] },
+    'light-ct': { label: '调光灯', icon: 'lamp', color: 'amber', fields: [] },
+    'speaker': { label: '音箱', icon: 'speaker', color: 'blue', fields: [] },
+    'vacuum': { label: '扫地机器人', icon: 'vacuum', color: 'green', fields: ['battery', 'fan'], wide: true },
+    'sensor-climate': { label: '温湿度计', icon: 'thermo', color: 'sky', fields: ['humidity', 'battery'] },
+    'air': { label: '空气电台', icon: 'wind', color: 'green', fields: ['humidity', 'pm25', 'formaldehyde'], wide: true, toggles: true },
+    'router': { label: '路由器', icon: 'router', color: 'indigo', fields: [], toggles: true },
+    'battery': { label: '电池', icon: 'battery', color: 'gray', fields: ['battery_state'] },
+  };
+
+  const FIELD_LABELS = {
+    battery: '电量传感器', fan: '吸力档位 (select)', power: '实时功率传感器',
+    energy: '累计电量传感器', humidity: '湿度传感器', pm25: 'PM2.5 传感器',
+    formaldehyde: '甲醛传感器', battery_state: '充电状态传感器',
+  };
+
+  const ICON_CHOICES = ['lamp', 'plug', 'speaker', 'vacuum', 'router', 'thermo', 'drop',
+    'wind', 'shield', 'battery', 'power', 'play', 'pause', 'home', 'sofa', 'bed', 'book', 'leaf'];
+
+  const COLOR_CHOICES = ['amber', 'orange', 'blue', 'green', 'teal', 'purple', 'indigo', 'pink', 'gray', 'sky'];
+
+  const SERVICE_CATALOG = {
+    light: ['turn_on', 'turn_off', 'toggle'],
+    switch: ['turn_on', 'turn_off', 'toggle'],
+    vacuum: ['start', 'pause', 'stop', 'return_to_base', 'locate'],
+    media_player: ['volume_set', 'volume_mute', 'media_pause', 'media_stop'],
+    fan: ['turn_on', 'turn_off', 'toggle'],
+    cover: ['open_cover', 'close_cover', 'toggle'],
+    climate: ['set_temperature', 'set_hvac_mode'],
+    input_boolean: ['turn_on', 'turn_off', 'toggle'],
+    scene: ['turn_on'],
+    script: ['turn_on'],
+    automation: ['trigger', 'turn_on', 'turn_off'],
+  };
+
+  const DOMAIN_ORDER = ['light', 'switch', 'vacuum', 'media_player', 'climate', 'fan', 'cover',
+    'sensor', 'binary_sensor', 'select', 'number', 'input_boolean', 'weather', 'scene', 'script', 'automation', 'button'];
+
+  const DOMAIN_LABELS = {
+    light: '灯', switch: '开关', vacuum: '扫地机器人', media_player: '媒体播放器',
+    climate: '空调', fan: '风扇', cover: '窗帘', sensor: '传感器', binary_sensor: '状态传感器',
+    select: '下拉选项', number: '数值', input_boolean: '虚拟开关', weather: '天气',
+    scene: '场景', script: '脚本', automation: '自动化', button: '按钮',
+  };
+
+  function pickableDomain(d) {
+    return DOMAIN_ORDER.indexOf(d) >= 0;
+  }
+
+  function guessType(entityId) {
+    const d = entityId.split('.')[0];
+    if (d === 'light') return 'light-ct';
+    if (d === 'switch') return 'switch';
+    if (d === 'vacuum') return 'vacuum';
+    if (d === 'media_player') return 'speaker';
+    if (d === 'sensor' || d === 'climate') return 'sensor-climate';
+    return 'switch';
+  }
+
+  /* 卡片类型 → 主实体域(用于换实体时判断类型是否需要联动切换) */
+  function typeDomain(t) {
+    if (t === 'light-ct') return 'light';
+    if (t === 'switch-power') return 'switch';
+    return t;
+  }
+
+  /* ---------- Modal 框架(单例, 挂在 Shadow root 内) ---------- */
+
+  let modalEl = null;
+  let modalOnOk = null;
+
+  function topMask() {
+    if (!PANEL_REFS || !PANEL_REFS.root) return null;
+    const masks = PANEL_REFS.root.querySelectorAll('.modal-mask.show');
+    return masks.length ? masks[masks.length - 1] : null;
+  }
+
+  function ensureModal() {
+    if (modalEl) return modalEl;
+    const mask = h('div', 'modal-mask');
+    const box = h('div', 'modal');
+    const title = h('div', 'modal-title');
+    const body = h('div', 'modal-body');
+    const foot = h('div', 'modal-foot');
+    const cancelBtn = h('button', 'btn', '取消');
+    cancelBtn.type = 'button';
+    const okBtn = h('button', 'btn primary', '确定');
+    okBtn.type = 'button';
+    cancelBtn.addEventListener('click', closeModal);
+    okBtn.addEventListener('click', () => {
+      if (modalOnOk && modalOnOk() === false) return;
+      closeModal();
+    });
+    foot.appendChild(cancelBtn);
+    foot.appendChild(okBtn);
+    box.appendChild(title);
+    box.appendChild(body);
+    box.appendChild(foot);
+    mask.appendChild(box);
+    mask.addEventListener('click', (e) => { if (e.target === mask) closeModal(); });
+    modalEl = { mask, box, title, body, foot, cancelBtn, okBtn };
+    if (PANEL_REFS && PANEL_REFS.root) PANEL_REFS.root.appendChild(mask);
+    return modalEl;
+  }
+
+  function openModal(titleText, buildBody, onOk, okText) {
+    const m = ensureModal();
+    m.title.textContent = titleText;
+    m.body.innerHTML = '';
+    m.okBtn.textContent = okText || '确定';
+    modalOnOk = onOk || null;
+    m.okBtn.style.display = onOk ? '' : 'none';
+    if (buildBody) buildBody(m.body);
+    m.mask.classList.add('show');
+    return m;
+  }
+
+  function closeModal() {
+    if (!modalEl) return;
+    modalEl.mask.classList.remove('show');
+    modalOnOk = null;
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const mask = topMask();
+    if (!mask) return;
+    mask.classList.remove('show');
+    if (mask === modalEl.mask) modalOnOk = null;
+  });
+
+  /* ---------- 实体选择器(独立弹层, 可叠加在主编辑器之上) ---------- */
+
+  function openEntityPicker(current, onPick, domainFilter) {
+    const mask = h('div', 'modal-mask');
+    const box = h('div', 'modal');
+    const title = h('div', 'modal-title', '选择实体');
+    const body = h('div', 'modal-body');
+    const foot = h('div', 'modal-foot');
+    const cancelBtn = h('button', 'btn', '取消');
+    cancelBtn.type = 'button';
+    foot.appendChild(cancelBtn);
+    box.appendChild(title);
+    box.appendChild(body);
+    box.appendChild(foot);
+    mask.appendChild(box);
+    if (PANEL_REFS && PANEL_REFS.root) PANEL_REFS.root.appendChild(mask);
+
+    const close = () => {
+      mask.classList.remove('show');
+      setTimeout(() => mask.remove(), 220);
+    };
+    cancelBtn.addEventListener('click', close);
+    mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
+
+    const search = h('input', 'field-search');
+    search.type = 'search';
+    search.placeholder = '搜索名称或实体 ID…';
+    const list = h('div', 'entity-list');
+    body.appendChild(search);
+    body.appendChild(list);
+
+    const paint = () => {
+      const kw = search.value.trim().toLowerCase();
+      list.innerHTML = '';
+      const groups = {};
+      const states = (HASS && HASS.states) || {};
+      Object.keys(states).forEach((id) => {
+        const st = states[id];
+        const fn = (st.attributes && st.attributes.friendly_name) || id;
+        if (kw && id.toLowerCase().indexOf(kw) < 0 && fn.toLowerCase().indexOf(kw) < 0) return;
+        const d = id.split('.')[0];
+        if (domainFilter && domainFilter.indexOf(d) < 0) return;
+        if (!domainFilter && !pickableDomain(d)) return;
+        (groups[d] = groups[d] || []).push({ id: id, fn: fn });
+      });
+      Object.keys(groups)
+        .sort((a, b) => {
+          const ia = DOMAIN_ORDER.indexOf(a);
+          const ib = DOMAIN_ORDER.indexOf(b);
+          return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+        })
+        .forEach((d) => {
+          list.appendChild(h('div', 'entity-group', (DOMAIN_LABELS[d] || d) + ' · ' + groups[d].length));
+          groups[d].sort((a, b) => String(a.fn).localeCompare(String(b.fn), 'zh')).forEach((item) => {
+            const b = h('button', 'entity-item' + (item.id === current ? ' cur' : ''),
+              '<span>' + escHtml(item.fn) + '</span><small>' + escHtml(item.id) + '</small>');
+            b.type = 'button';
+            b.addEventListener('click', () => {
+              onPick(item.id);
+              close();
+            });
+            list.appendChild(b);
+          });
+        });
+      if (!list.childElementCount) list.appendChild(h('div', 'entity-empty', '没有匹配的实体'));
+    };
+    search.addEventListener('input', paint);
+    paint();
+    requestAnimationFrame(() => mask.classList.add('show'));
+    setTimeout(() => search.focus(), 30);
+  }
+
+  /* ---------- 通用表单构件 ---------- */
+
+  function formRow(label, control) {
+    const row = h('div', 'form-row');
+    row.appendChild(h('div', 'form-label', label));
+    row.appendChild(control);
+    return row;
+  }
+
+  function textField(value, placeholder) {
+    const input = h('input', 'field-input');
+    input.type = 'text';
+    input.value = value || '';
+    if (placeholder) input.placeholder = placeholder;
+    return input;
+  }
+
+  function selectField(options, value, onChange) {
+    const sel = h('select', 'field-input');
+    options.forEach((o) => {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.appendChild(opt);
+    });
+    sel.value = value;
+    if (onChange) sel.addEventListener('change', () => onChange(sel.value));
+    return sel;
+  }
+
+  function iconGrid(value, onPickIcon) {
+    const grid = h('div', 'icon-grid');
+    ICON_CHOICES.forEach((name) => {
+      const b = h('button', 'icon-opt' + (name === value ? ' cur' : ''), icon(name, 18));
+      b.type = 'button';
+      b.title = name;
+      b.addEventListener('click', () => {
+        Array.prototype.forEach.call(grid.children, (c) => c.classList.remove('cur'));
+        b.classList.add('cur');
+        onPickIcon(name);
+      });
+      grid.appendChild(b);
+    });
+    return grid;
+  }
+
+  function colorRow(value, onPickColor) {
+    const row = h('div', 'color-row');
+    COLOR_CHOICES.forEach((c) => {
+      const b = h('button', 'color-opt tile-' + c + (c === value ? ' cur' : ''));
+      b.type = 'button';
+      b.title = c;
+      b.addEventListener('click', () => {
+        Array.prototype.forEach.call(row.children, (x) => x.classList.remove('cur'));
+        b.classList.add('cur');
+        onPickColor(c);
+      });
+      row.appendChild(b);
+    });
+    return row;
+  }
+
+  function entityButton(entityId, onPick, domainFilter) {
+    const b = h('button', 'btn btn-entity');
+    b.type = 'button';
+    const paint = () => {
+      b.innerHTML = entityId
+        ? '<span>' + escHtml(entityId) + '</span>'
+        : '<span class="dim">未选择</span>';
+    };
+    paint();
+    b.addEventListener('click', () => openEntityPicker(entityId, (id) => {
+      entityId = id;
+      paint();
+      onPick(id);
+    }, domainFilter));
+    return b;
+  }
+
+  /* ---------- 设备编辑器 ---------- */
+
+  function openDeviceEditor(dev, room, container) {
+    const isNew = !dev;
+    const draft = dev ? cloneDev(dev) : {
+      type: 'switch', entity_id: '', name: '', icon: 'plug', color: 'gray',
+    };
+    let fieldsBox = null;
+
+    const buildFields = () => {
+      fieldsBox.innerHTML = '';
+      const meta = DEVICE_TYPES[draft.type] || { fields: [] };
+      (meta.fields || []).forEach((f) => {
+        const btn = entityButton(draft[f], (id) => { draft[f] = id; });
+        fieldsBox.appendChild(formRow(FIELD_LABELS[f] || f, btn));
+      });
+      if (meta.toggles) {
+        const box = h('div', 'toggles-editor');
+        const list = h('div', 'toggle-list');
+        const paintList = () => {
+          list.innerHTML = '';
+          (draft.toggles || []).forEach((t, idx) => {
+            const row = h('div', 'toggle-row');
+            const nameInput = textField(t.label, '名称');
+            nameInput.addEventListener('input', () => { t.label = nameInput.value; });
+            const btn = entityButton(t.entity_id, (id) => { t.entity_id = id; }, ['switch', 'light', 'input_boolean', 'fan']);
+            const del = h('button', 'mini-btn mini-del', '✕');
+            del.type = 'button';
+            del.title = '删除';
+            del.addEventListener('click', () => {
+              draft.toggles.splice(idx, 1);
+              paintList();
+            });
+            row.appendChild(nameInput);
+            row.appendChild(btn);
+            row.appendChild(del);
+            list.appendChild(row);
+          });
+          if (!draft.toggles || !draft.toggles.length) {
+            list.appendChild(h('div', 'dim', '暂无子开关'));
+          }
+        };
+        paintList();
+        const add = h('button', 'btn', '＋ 添加子开关');
+        add.type = 'button';
+        add.addEventListener('click', () => {
+          draft.toggles = draft.toggles || [];
+          draft.toggles.push({ entity_id: '', label: '新开关' });
+          paintList();
+        });
+        box.appendChild(list);
+        box.appendChild(add);
+        fieldsBox.appendChild(formRow('子开关', box));
+      }
+    };
+
+    openModal(isNew ? '添加设备' : '编辑设备', (body) => {
+      const nameInput = textField(draft.name, '显示名称');
+
+      const typeSel = selectField(
+        Object.keys(DEVICE_TYPES).map((k) => ({ value: k, label: DEVICE_TYPES[k].label })),
+        draft.type,
+        (v) => {
+          draft.type = v;
+          const meta = DEVICE_TYPES[v] || {};
+          if (!draft.icon || draft.icon === 'plug') draft.icon = meta.icon || 'plug';
+          if (!draft.color || draft.color === 'gray') draft.color = meta.color || 'gray';
+          if (meta.wide) draft.wide = true;
+          buildFields();
+        }
+      );
+
+      const entBtn = entityButton(draft.entity_id, (id) => {
+        const prevName = draft.name;
+        draft.entity_id = id;
+        const st = HASS && HASS.states[id];
+        const fn = st && st.attributes && st.attributes.friendly_name;
+        /* 名称未手动改过时跟随新实体; 类型明显不匹配时自动切换 */
+        if (!nameInput.value || nameInput.value === prevName) {
+          nameInput.value = fn || id.split('.')[1];
+          draft.name = nameInput.value;
+        }
+        const nt = guessType(id);
+        if (typeDomain(nt) !== typeDomain(draft.type)) {
+          draft.type = nt;
+          typeSel.value = nt;
+          buildFields();
+        }
+      });
+      nameInput.addEventListener('input', () => { draft.name = nameInput.value; });
+
+      const iconBox = iconGrid(draft.icon, (n) => { draft.icon = n; });
+      const colorBox = colorRow(draft.color, (c) => { draft.color = c; });
+
+      const wideChk = h('input');
+      wideChk.type = 'checkbox';
+      wideChk.checked = !!draft.wide;
+      wideChk.addEventListener('change', () => { draft.wide = wideChk.checked; });
+
+      fieldsBox = h('div', 'form-fields');
+      buildFields();
+
+      body.appendChild(formRow('设备', entBtn));
+      body.appendChild(formRow('名称', nameInput));
+      body.appendChild(formRow('卡片类型', typeSel));
+      body.appendChild(formRow('图标', iconBox));
+      body.appendChild(formRow('颜色', colorBox));
+      body.appendChild(formRow('宽卡片', wideChk));
+      body.appendChild(fieldsBox);
+
+      if (!isNew) {
+        const del = h('button', 'btn danger', '删除此设备');
+        del.type = 'button';
+        del.addEventListener('click', () => {
+          const idx = room.devices.indexOf(dev);
+          if (idx >= 0) room.devices.splice(idx, 1);
+          renderRooms(container);
+          closeModal();
+          toast('已删除「' + dev.name + '」');
+        });
+        body.appendChild(del);
+      }
+    }, () => {
+      if (!draft.entity_id) {
+        toast('请先选择设备');
+        return false;
+      }
+      if (!draft.name) draft.name = draft.entity_id.split('.')[1];
+      if (isNew) {
+        room.devices.push(draft);
+        toast('已添加「' + draft.name + '」');
+      } else {
+        Object.keys(draft).forEach((k) => { dev[k] = draft[k]; });
+        toast('已保存「' + draft.name + '」');
+      }
+      renderRooms(container);
+    });
+  }
+
+  /* ---------- 卡片编辑条 + 拖拽排序 ---------- */
+
+  function attachCardEdit(cardEl, room, dev, container) {
+    cardEl.draggable = true;
+    const bar = h('div', 'card-edit-bar');
+    const editBtn = h('button', 'mini-btn', '✎');
+    editBtn.type = 'button';
+    editBtn.title = '编辑设备';
+    const delBtn = h('button', 'mini-btn mini-del', '✕');
+    delBtn.type = 'button';
+    delBtn.title = '删除设备';
+    bar.appendChild(editBtn);
+    bar.appendChild(delBtn);
+    cardEl.appendChild(bar);
+
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDeviceEditor(dev, room, container);
+    });
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!confirm('删除设备「' + dev.name + '」?')) return;
+      const idx = room.devices.indexOf(dev);
+      if (idx >= 0) room.devices.splice(idx, 1);
+      renderRooms(container);
+    });
+
+    cardEl.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', String(room.devices.indexOf(dev)));
+      e.dataTransfer.effectAllowed = 'move';
+      cardEl.classList.add('dragging');
+    });
+    cardEl.addEventListener('dragend', () => cardEl.classList.remove('dragging'));
+    cardEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      cardEl.classList.add('dragover');
+    });
+    cardEl.addEventListener('dragleave', () => cardEl.classList.remove('dragover'));
+    cardEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      cardEl.classList.remove('dragover');
+      const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      const to = room.devices.indexOf(dev);
+      if (isNaN(from) || from === to) return;
+      room.devices.splice(to, 0, room.devices.splice(from, 1)[0]);
+      renderRooms(container);
+    });
+  }
+
+  /* ---------- 房间编辑器 ---------- */
+
+  function openRoomEditor(room) {
+    const isNew = !room;
+    const draft = room ? { name: room.name, icon: room.icon } : { name: '新房间', icon: 'sofa' };
+    openModal(isNew ? '添加房间' : '编辑房间', (body) => {
+      const nameInput = textField(draft.name, '房间名称');
+      nameInput.addEventListener('input', () => { draft.name = nameInput.value; });
+      const iconBox = iconGrid(draft.icon, (n) => { draft.icon = n; });
+      body.appendChild(formRow('名称', nameInput));
+      body.appendChild(formRow('图标', iconBox));
+    }, () => {
+      if (!draft.name) {
+        toast('请输入房间名称');
+        return false;
+      }
+      if (isNew) {
+        ROOMS.push({ id: genId('room'), name: draft.name, icon: draft.icon, devices: [] });
+        toast('已添加房间「' + draft.name + '」');
+      } else {
+        room.name = draft.name;
+        room.icon = draft.icon;
+      }
+      rerenderPanel();
+    });
+  }
+
+  /* ---------- 场景编辑器 ---------- */
+
+  function openSceneEditor(scene) {
+    const isNew = !scene;
+    const draft = scene
+      ? { label: scene.label, icon: scene.icon, color: scene.color, actions: (scene.actions || []).map((a) => ({ ...a })) }
+      : { label: '新场景', icon: 'power', color: 'sc-blue', actions: [] };
+
+    openModal(isNew ? '添加场景' : '编辑场景', (body) => {
+      const nameInput = textField(draft.label, '场景名称');
+      nameInput.addEventListener('input', () => { draft.label = nameInput.value; });
+
+      const colorSel = selectField(
+        COLOR_CHOICES.map((c) => ({ value: 'sc-' + c, label: c })),
+        draft.color,
+        (v) => { draft.color = v; }
+      );
+
+      const list = h('div', 'action-list');
+      const paintList = () => {
+        list.innerHTML = '';
+        if (!draft.actions.length) list.appendChild(h('div', 'dim', '暂无动作, 点击下方按钮添加'));
+        draft.actions.forEach((a, idx) => {
+          const row = h('div', 'action-row');
+          const domainSel = selectField(
+            Object.keys(SERVICE_CATALOG).map((d) => ({ value: d, label: d })),
+            a.domain,
+            (v) => {
+              a.domain = v;
+              a.service = (SERVICE_CATALOG[v] || [])[0] || '';
+              paintList();
+            }
+          );
+          const svcSel = selectField(
+            (SERVICE_CATALOG[a.domain] || []).map((s) => ({ value: s, label: s })),
+            a.service,
+            (v) => { a.service = v; }
+          );
+          const btn = entityButton(a.entity_id, (id) => { a.entity_id = id; });
+          const del = h('button', 'mini-btn mini-del', '✕');
+          del.type = 'button';
+          del.title = '删除动作';
+          del.addEventListener('click', () => {
+            draft.actions.splice(idx, 1);
+            paintList();
+          });
+          row.appendChild(domainSel);
+          row.appendChild(svcSel);
+          row.appendChild(btn);
+          row.appendChild(del);
+          list.appendChild(row);
+        });
+      };
+      paintList();
+
+      const add = h('button', 'btn', '＋ 添加动作');
+      add.type = 'button';
+      add.addEventListener('click', () => {
+        const d = 'light';
+        draft.actions.push({ domain: d, service: 'turn_off', entity_id: '' });
+        paintList();
+      });
+
+      const iconBox = iconGrid(draft.icon, (n) => { draft.icon = n; });
+
+      body.appendChild(formRow('名称', nameInput));
+      body.appendChild(formRow('图标', iconBox));
+      body.appendChild(formRow('颜色', colorSel));
+      body.appendChild(formRow('动作', list));
+      body.appendChild(add);
+
+      if (!isNew) {
+        const del = h('button', 'btn danger', '删除此场景');
+        del.type = 'button';
+        del.addEventListener('click', () => {
+          SCENES = SCENES.filter((x) => x !== scene);
+          rerenderPanel();
+          closeModal();
+        });
+        body.appendChild(del);
+      }
+    }, () => {
+      if (!draft.label) {
+        toast('请输入场景名称');
+        return false;
+      }
+      draft.actions = draft.actions.filter((a) => a.entity_id);
+      if (isNew) {
+        SCENES.push({ id: genId('scene'), ...draft });
+        toast('已添加场景「' + draft.label + '」');
+      } else {
+        scene.label = draft.label;
+        scene.icon = draft.icon;
+        scene.color = draft.color;
+        scene.actions = draft.actions;
+      }
+      rerenderPanel();
+    });
+  }
+
+  /* ---------- 配置序列化 / 持久化 ---------- */
+
+  function serializeConfig() {
+    return {
+      version: 1,
+      weather: WEATHER_ENTITY || '',
+      scenes: SCENES.map((s) => ({
+        id: s.id || genId('scene'),
+        label: s.label,
+        icon: s.icon,
+        color: s.color,
+        actions: (s.actions || []).map((a) => ({
+          domain: a.domain, service: a.service, entity_id: a.entity_id,
+        })),
+      })),
+      rooms: ROOMS.map((r) => ({
+        id: r.id || genId('room'),
+        name: r.name,
+        icon: r.icon,
+        devices: (r.devices || []).map(cloneDev),
+      })),
+    };
+  }
+
+  function applyConfig(cfg) {
+    const scenes = Array.isArray(cfg.scenes) ? cfg.scenes : [];
+    SCENES = scenes.length
+      ? scenes.map((s) => ({ ...s, actions: Array.isArray(s.actions) ? s.actions : [] }))
+      : DEFAULT_SCENES;
+    ROOMS = Array.isArray(cfg.rooms) && cfg.rooms.length ? cfg.rooms : DEFAULT_ROOMS;
+    WEATHER_ENTITY = typeof cfg.weather === 'string' && cfg.weather ? cfg.weather : DEFAULT_WEATHER_ENTITY;
+  }
+
+  async function persistConfig() {
+    const res = await fetch(CONFIG_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(serializeConfig()),
+    });
+    const j = await res.json().catch(() => ({ ok: false, error: 'HTTP ' + res.status }));
+    if (!res.ok || !j.ok) throw new Error(j.error || ('HTTP ' + res.status));
+  }
+
+  async function resetConfigRemote() {
+    const res = await fetch(CONFIG_URL, { method: 'DELETE' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    applyConfig(DEFAULT_CONFIG);
+  }
+
+  async function loadConfigRemote() {
+    try {
+      const res = await fetch(CONFIG_URL);
+      if (!res.ok) return false;
+      const j = await res.json();
+      if (j && j.ok && j.config) {
+        applyConfig(j.config);
+        return true;
+      }
+    } catch (err) { /* 接口不可用时静默使用默认配置 */ }
+    return false;
+  }
+
+  /* ---------- 面板重渲染 / 编辑开关 ---------- */
+
+  function rerenderPanel() {
+    if (!PANEL_REFS) return;
+    renderScenes(PANEL_REFS.scenes);
+    renderRooms(PANEL_REFS.rooms);
+    updateAll();
+    updateWeather(PANEL_REFS.weatherRefs);
+  }
+
+  function setEditing(on) {
+    EDITING = !!on;
+    if (!PANEL_REFS) return;
+    PANEL_REFS.root.classList.toggle('editing', EDITING);
+    PANEL_REFS.editBar.classList.toggle('show', EDITING);
+    rerenderPanel();
+    toast(EDITING ? '编辑模式:点击卡片可修改设备' : '已退出编辑模式');
+  }
+
   /* ================= 自定义元素 ================= */
 
   class HomeKitPanel extends HTMLElement {
@@ -992,12 +1782,25 @@
         '<span class="weather-ico" data-ref="wico">⛅</span>' +
         '<span class="weather-temp" data-ref="wtemp">--°</span>' +
         '<span class="weather-hum" data-ref="whum"></span>';
+      weather.title = '天气';
+      weather.addEventListener('click', () => {
+        if (!EDITING) return;
+        openEntityPicker(WEATHER_ENTITY, (id) => {
+          WEATHER_ENTITY = id;
+          rerenderPanel();
+        }, ['weather', 'sensor']);
+      });
       const themeBtn = h('button', 'icon-btn');
       themeBtn.type = 'button';
       themeBtn.title = '切换深浅色';
+      const editBtn = h('button', 'icon-btn', icon('edit', 18));
+      editBtn.type = 'button';
+      editBtn.title = '编辑面板布局';
+      editBtn.addEventListener('click', () => setEditing(!EDITING));
 
       right.appendChild(weather);
       right.appendChild(themeBtn);
+      right.appendChild(editBtn);
       topbar.appendChild(menuBtn);
       topbar.appendChild(left);
       topbar.appendChild(right);
@@ -1036,9 +1839,50 @@
       root.appendChild(rooms);
       renderRooms(rooms);
 
+      /* ---- 编辑操作栏(仅编辑模式显示) ---- */
+      const editBar = h('div', 'edit-bar');
+      const saveBtn = h('button', 'btn primary', '💾 保存配置');
+      saveBtn.type = 'button';
+      const discardBtn = h('button', 'btn', '放弃更改');
+      discardBtn.type = 'button';
+      const resetBtn = h('button', 'btn danger', '恢复默认');
+      resetBtn.type = 'button';
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        try {
+          await persistConfig();
+          setEditing(false);
+          toast('配置已保存');
+        } catch (err) {
+          toast('保存失败:' + (err && err.message ? err.message : '未知错误'));
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+      discardBtn.addEventListener('click', () => {
+        if (!confirm('放弃本次未保存的修改?')) return;
+        loadConfigRemote().then(() => {
+          setEditing(false);
+          rerenderPanel();
+        });
+      });
+      resetBtn.addEventListener('click', () => {
+        if (!confirm('恢复内置默认配置?你保存过的设备配置将被清除。')) return;
+        resetConfigRemote()
+          .then(() => { setEditing(false); toast('已恢复默认配置'); })
+          .catch((err) => toast('恢复失败:' + err.message));
+      });
+      editBar.appendChild(discardBtn);
+      editBar.appendChild(saveBtn);
+      editBar.appendChild(resetBtn);
+      root.appendChild(editBar);
+
       /* ---- Toast ---- */
       toastEl = h('div', 'toast');
       root.appendChild(toastEl);
+
+      /* ---- 全局引用(供编辑系统重渲染) ---- */
+      PANEL_REFS = { root: root, scenes: scenes, rooms: rooms, editBar: editBar, weatherRefs: this._refs };
 
       /* ---- 时钟 ---- */
       tickClock(this._refs);
@@ -1061,6 +1905,12 @@
   }
 
   customElements.define('homekit-panel', HomeKitPanel);
+
+  /* ================= 启动: 异步加载已保存的编辑配置 ================= */
+
+  loadConfigRemote().then((loaded) => {
+    if (loaded && PANEL_REFS) rerenderPanel();
+  });
 
   /* ================= 样式(Shadow DOM 内) ================= */
 
@@ -1555,6 +2405,312 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* ================= 可视化编辑 ================= */
+
+.hk-app.editing { padding-bottom: 96px; }
+.hk-app.editing .card { cursor: grab; position: relative; }
+.hk-app.editing .card.dragging { opacity: .35; }
+.hk-app.editing .card.dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.hk-app.editing .weather-chip { cursor: pointer; }
+.hk-app.editing .weather-chip:hover { filter: brightness(1.08); }
+.hk-app.editing .room-count { margin-left: 8px; }
+
+/* 卡片浮动编辑条 */
+.card-edit-bar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+  z-index: 6;
+}
+.card-edit-bar .mini-btn { backdrop-filter: blur(8px); }
+
+/* 小按钮 */
+.mini-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background .15s, color .15s;
+}
+.mini-btn:hover { background: var(--toggle-off); color: var(--text); }
+.mini-del:hover { background: var(--danger); color: #fff; }
+
+/* 房间工具条 */
+.room-tools { display: flex; gap: 4px; margin-left: 2px; }
+
+/* 场景编辑态 */
+.scene-tile { position: relative; }
+.scene-tile .mini-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  background: rgba(0,0,0,.28);
+  color: #fff;
+}
+.scene-tile .mini-del:hover { background: var(--danger); }
+.scene-add {
+  background: none;
+  border: 2px dashed var(--line);
+  color: var(--text-3);
+  box-shadow: none;
+}
+.scene-add:hover { border-color: var(--text-3); color: var(--text-2); }
+.scene-add svg { opacity: .6; }
+
+/* 添加房间 / 添加设备 */
+.room-add {
+  width: 100%;
+  padding: 18px;
+  border: 2px dashed var(--line);
+  border-radius: var(--card-radius);
+  background: none;
+  color: var(--text-3);
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.room-add:hover { border-color: var(--text-3); color: var(--text-2); }
+.card-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 110px;
+  border: 2px dashed var(--line);
+  background: none;
+  box-shadow: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.card-add:hover { border-color: var(--text-3); color: var(--text-2); }
+.add-plus { font-size: 26px; font-weight: 300; line-height: 1; }
+
+/* 底部编辑操作栏 */
+.edit-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(80px);
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card);
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.12), 0 16px 44px rgba(0,0,0,.22);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform .25s, opacity .25s;
+  z-index: 90;
+  max-width: 94vw;
+}
+.edit-bar.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
+
+/* ---------- Modal ---------- */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+  z-index: 200;
+}
+.modal-mask.show { opacity: 1; pointer-events: auto; }
+.modal {
+  width: min(560px, 100%);
+  max-height: min(82vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  color: var(--text);
+  border-radius: 18px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.35);
+  overflow: hidden;
+  transform: translateY(10px);
+  transition: transform .2s;
+}
+.modal-mask.show .modal { transform: none; }
+.modal-title {
+  font-size: 16.5px;
+  font-weight: 700;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.modal-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- 表单 ---------- */
+.form-row { display: flex; align-items: center; gap: 12px; min-height: 36px; }
+.form-label {
+  flex: 0 0 88px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.form-row > :last-child { flex: 1; min-width: 0; }
+.form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px dashed var(--line);
+  padding-top: 12px;
+}
+.field-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+}
+.field-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.field-search { margin-bottom: 4px; }
+.dim { color: var(--text-3); font-size: 13px; }
+
+/* 按钮 */
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  background: var(--chip);
+  color: var(--text);
+  cursor: pointer;
+  transition: filter .15s, opacity .15s;
+  white-space: nowrap;
+}
+.btn:hover { filter: brightness(.96); }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.danger { background: var(--danger); color: #fff; }
+.btn-entity {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card-2);
+  border: 1px dashed var(--line);
+  font-weight: 500;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.btn-entity:hover { border-color: var(--text-3); }
+.btn-entity .dim { font-style: normal; }
+
+/* 实体选择器 */
+.entity-list {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--card-2);
+}
+.entity-group {
+  position: sticky;
+  top: 0;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-3);
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.entity-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.entity-item:last-child { border-bottom: none; }
+.entity-item:hover { background: var(--chip); }
+.entity-item.cur { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.entity-item small { color: var(--text-3); font-size: 11.5px; }
+.entity-empty { padding: 26px; text-align: center; color: var(--text-3); font-size: 13.5px; }
+
+/* 图标网格 / 颜色条 */
+.icon-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.icon-opt {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-2);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.icon-opt:hover { border-color: var(--text-3); color: var(--text); }
+.icon-opt.cur { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.color-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.color-opt {
+  width: 28px;
+  height: 28px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: inset 0 0 0 2px var(--card);
+}
+.color-opt.cur { border-color: var(--text); }
+
+/* 子开关 / 场景动作编辑器 */
+.toggle-list, .action-list { display: flex; flex-direction: column; gap: 8px; }
+.toggle-row, .action-row { display: flex; gap: 8px; align-items: center; }
+.toggle-row .field-input { flex: 0 0 90px; }
+.toggle-row .btn-entity { flex: 1; }
+.action-row .field-input { flex: 0 0 108px; }
+.action-row .btn-entity { flex: 1; min-width: 0; }
+.toggles-editor { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.toggles-editor > .btn { align-self: flex-start; }
+
 @media (max-width: 640px) {
   .hk-app { padding: 14px 13px 32px; }
   .grid { grid-template-columns: 1fr; }
@@ -1572,6 +2728,19 @@ input[type="range"]:disabled { opacity: .45; cursor: default; }
   .btn { padding: 11px 10px; }
   .seg button { padding: 8px 4px; }
   .toast { bottom: 22px; }
+
+  /* 编辑模式窄屏适配 */
+  .hk-app.editing { padding-bottom: 108px; }
+  .edit-bar { gap: 8px; padding: 9px 10px; }
+  .edit-bar .btn { padding: 10px 12px; font-size: 13.5px; }
+  .modal { max-height: 88vh; }
+  .entity-list { max-height: 52vh; }
+  .form-label { flex-basis: 72px; }
+  .action-row { flex-wrap: wrap; }
+  .action-row .field-input { flex-basis: 92px; }
+  .toggle-row { flex-wrap: wrap; }
+  .toggle-row .field-input { flex-basis: 80px; }
+  .card-edit-bar .mini-btn { width: 30px; height: 30px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
